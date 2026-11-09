@@ -1,0 +1,232 @@
+[
+  {
+    "name": "AR & Invoice Recovery Engine",
+    "nodes": [
+      {
+        "id": "a1",
+        "name": "Daily 9am (Mon-Fri)",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          300
+        ],
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 9 * * 1-5"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "a2",
+        "name": "Fetch & Decide",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          240,
+          300
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// ===== AR Engine: Fetch, Kill-Switch, Decide, Render =====\n// Mode: Run Once for All Items. Requires N8N_BLOCK_ENV_ACCESS_IN_NODE=false\n// so the Code node can read the env vars listed in n8n/ARCHITECTURE.md.\nconst env = $env;\nconst CFG = {\n  stripeKey: env.STRIPE_RESTRICTED_KEY,\n  dryRun: String(env.DRY_RUN ?? 'true').toLowerCase() !== 'false',\n  enabled: String(env.ENGINE_ENABLED ?? 'true').toLowerCase() !== 'false',\n  minGap: Number(env.MIN_DAYS_BETWEEN_SENDS ?? 3),\n  minAmount: Number(env.MIN_AMOUNT_CENTS ?? 100),\n  excluded: String(env.EXCLUDED_CUSTOMERS ?? '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean),\n  timezone: env.TIMEZONE || 'UTC',\n  agencyName: env.AGENCY_NAME || 'Our Agency',\n  signature: env.AGENCY_SIGNATURE || 'The Billing Team',\n  billingEmail: env.REPLY_TO || env.FROM_EMAIL || 'billing@agency.com',\n  interestRate: env.LATE_INTEREST_RATE || '1.5% per month',\n  msaClause: env.MSA_LATE_CLAUSE || 'Section 6 (Payment Terms)',\n};\nif (!CFG.enabled) return [];\nif (!CFG.stripeKey || CFG.stripeKey.startsWith('sk_')) throw new Error('Set STRIPE_RESTRICTED_KEY to a restricted rk_ key.');\n\nconst TEMPLATES = {\n  \"1\": {\n    \"subject\": \"Friendly heads-up: invoice {{invoice_number}} is due {{due_date}}\",\n    \"body\": \"Hi {{client_name}},\\n\\nA quick, friendly heads-up from the {{agency_name}} billing desk: invoice **{{invoice_number}}** for **{{amount}}** is due on **{{due_date}}**.\\n\\nIf it's already scheduled on your side, thank you \u2014 there's nothing more to do. If it's easier to take care of now, you can pay securely by card or bank transfer in under a minute:\\n\\n[View and pay invoice {{invoice_number}}]({{payment_link}})\\n\\nNeed a PO number added, a different billing contact, or a copy sent to your accounts team? Just reply to this email and we'll sort it out the same day.\\n\\nThanks for being a great partner,\\n{{signature}}\\n{{agency_name}} \u00b7 {{billing_email}}\"\n  },\n  \"2\": {\n    \"subject\": \"Invoice {{invoice_number}} is due today \u2014 {{amount}}\",\n    \"body\": \"Hi {{client_name}},\\n\\nThis is an automated notice that invoice **{{invoice_number}}** is due today.\\n\\n- Invoice: {{invoice_number}}\\n- Amount due: {{amount}}\\n- Due date: {{due_date}}\\n- Pay online: [Secure payment page]({{payment_link}})\\n\\nIf payment has already been sent, please disregard this message \u2014 our records update automatically once funds are received.\\n\\nFor remittance details or a W-9/tax form, reply to this email or contact {{billing_email}}.\\n\\nRegards,\\n{{signature}}\\n{{agency_name}}\"\n  },\n  \"3\": {\n    \"subject\": \"Checking in on invoice {{invoice_number}}\",\n    \"body\": \"Hi {{client_name}},\\n\\nWe haven't yet received payment for invoice **{{invoice_number}}** ({{amount}}), which was due on **{{due_date}}** \u2014 now {{days_overdue}} days ago.\\n\\nThese things usually come down to a simple admin snag: the invoice landed in the wrong inbox, it's waiting on an approval, or your AP team needs a vendor form from us. If any of those apply, reply with what you need and we'll turn it around today.\\n\\nIf it's ready to go, here's the direct payment link:\\n\\n[Pay invoice {{invoice_number}}]({{payment_link}})\\n\\nCould you let us know an expected payment date either way? That helps us keep your account in good standing and your project on schedule.\\n\\nThank you,\\n{{signature}}\\n{{agency_name}} \u00b7 {{billing_email}}\"\n  },\n  \"4\": {\n    \"subject\": \"Action required: work on your account pauses until invoice {{invoice_number}} is settled\",\n    \"body\": \"Hi {{client_name}},\\n\\nInvoice **{{invoice_number}}** for **{{amount}}** is now **{{days_overdue}} days past due** (due {{due_date}}), and we haven't received payment or an expected payment date.\\n\\nTo keep things fair for every client we work with, our standard policy applies from this point:\\n\\n- Delivery of active project files and deliverables is temporarily paused.\\n- Scheduled meetings and working sessions are placed on hold.\\n- Work already in progress is preserved and resumes as soon as the balance clears.\\n\\nThis is a business boundary, not a judgment \u2014 we value the work we're doing together and want to get straight back to it. Settling the balance today restores everything immediately:\\n\\n[Pay {{amount}} now]({{payment_link}})\\n\\nIf there's a dispute or a cash-flow issue, reply to this email today. We're glad to discuss a short payment plan, but we need to hear from you to keep the project moving.\\n\\nRegards,\\n{{signature}}\\n{{agency_name}} \u00b7 {{billing_email}}\"\n  },\n  \"5\": {\n    \"subject\": \"FINAL NOTICE: invoice {{invoice_number}} \u2014 {{amount}} past due, late-payment interest applies\",\n    \"body\": \"Dear {{client_name}},\\n\\nThis is a formal final notice regarding invoice **{{invoice_number}}**, issued by {{agency_name}}.\\n\\n- Outstanding balance: {{amount}}\\n- Original due date: {{due_date}}\\n- Days past due: {{days_overdue}}\\n\\nUnder the late-payment terms in our Master Services Agreement ({{msa_clause}}), overdue balances accrue interest at **{{interest_rate}}**, or the maximum rate permitted by applicable law if lower, together with any statutory interest and reasonable recovery costs to which we are entitled. We reserve the right to apply these charges from the original due date.\\n\\nPlease pay the outstanding balance in full within **7 days** of the date of this notice:\\n\\n[Pay invoice {{invoice_number}}]({{payment_link}})\\n\\nIf full payment or a written, agreed payment plan is not received within that period, the account will be referred for formal collection and we may pursue all remedies available under the agreement and applicable law, without further notice.\\n\\nIf you believe this notice is in error, or payment has already been made, reply to {{billing_email}} immediately with the remittance details.\\n\\nSincerely,\\n{{signature}}\\n{{agency_name}}\"\n  }\n};\nconst LADDER = [[1, -3], [2, 0], [3, 3], [4, 7], [5, 14]];\nconst ledger = $getWorkflowStaticData('global');           // { sent: { invoiceId: {stage, at} } }\nledger.sent = ledger.sent || {};\n\nconst sleep = ms => new Promise(r => setTimeout(r, ms));\nconst stripeGet = async (path, qs = {}) => {\n  for (let attempt = 0; attempt < 6; attempt++) {\n    try {\n      return await this.helpers.httpRequest({\n        method: 'GET', url: `https://api.stripe.com${path}`, qs, json: true,\n        headers: { Authorization: `Bearer ${CFG.stripeKey}` },\n      });\n    } catch (e) {\n      const code = e.httpCode || e.statusCode || e.response?.status;\n      if (![429, 500, 502, 503, 504].includes(Number(code)) || attempt === 5) throw e;\n      await sleep(Math.min(60000, 1000 * 2 ** attempt) + Math.random() * 1000);\n    }\n  }\n};\n\n// Calendar date in the agency's timezone (YYYY-MM-DD -> day number).\nconst dayNumber = (d) => {\n  const s = new Intl.DateTimeFormat('en-CA', { timeZone: CFG.timezone }).format(d);\n  return Math.floor(Date.parse(s + 'T00:00:00Z') / 86400000);\n};\nconst today = dayNumber(new Date());\nconst money = (cents, cur) => new Intl.NumberFormat('en-US', { style: 'currency', currency: cur.toUpperCase() })\n  .format(['jpy', 'krw', 'vnd', 'clp', 'isk', 'ugx', 'xaf', 'xof', 'pyg', 'rwf'].includes(cur) ? cents : cents / 100);\nconst fmtDate = (unix) => new Intl.DateTimeFormat('en-US', { timeZone: CFG.timezone, month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(unix * 1000));\nconst esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst render = (t, v) => t.replace(/{{\\s*([a-z_]+)\\s*}}/g, (_, k) => { if (!(k in v)) throw new Error('Unknown tag ' + k); return v[k]; });\nconst inline = s => esc(s).replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g, '<a href=\"$2\" style=\"color:#0b5cff\">$1</a>').replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');\nconst toHtml = md => '<div style=\"font-family:-apple-system,Segoe UI,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2328;max-width:600px\">' +\n  md.trim().split(/\\n\\s*\\n/).map(b => { const l = b.split('\\n'); return l.every(x => /^\\s*[-*] /.test(x)) ? '<ul>' + l.map(x => `<li>${inline(x.replace(/^\\s*[-*] /, ''))}</li>`).join('') + '</ul>' : '<p>' + l.map(inline).join('<br>') + '</p>'; }).join('') + '</div>';\nconst toText = md => md.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g, '$1: $2').replace(/\\*\\*/g, '');\n\nconst killReason = inv => (inv.paid === true || inv.status === 'paid') ? 'paid'\n  : inv.status !== 'open' ? `status=${inv.status}` : inv.amount_remaining <= 0 ? 'nothing remaining' : null;\n\nfunction decide(dpd, last, daysSince) {\n  let target = 0;\n  for (const [n, off] of LADDER) if (dpd >= off) target = n;\n  if (target <= last) return 0;\n  if (target >= 4) target = Math.min(target, Math.max(last + 1, 3));\n  if (last > 0 && daysSince !== null && daysSince < CFG.minGap) return 0;\n  return target;\n}\n\n// ---- 1. Paginate GET /v1/invoices?status=open\nconst invoices = [];\nlet startingAfter;\ndo {\n  const qs = { status: 'open', limit: 100, 'expand[]': 'data.customer' };\n  if (startingAfter) qs.starting_after = startingAfter;\n  const page = await stripeGet('/v1/invoices', qs);\n  invoices.push(...page.data);\n  startingAfter = page.has_more ? page.data[page.data.length - 1].id : undefined;\n} while (startingAfter);\n\n// ---- 2. Evaluate each invoice\nconst out = [];\nfor (let inv of invoices) {\n  const cust = typeof inv.customer === 'object' && inv.customer ? inv.customer : {};\n  const email = (inv.customer_email || cust.email || '').trim();\n  const custId = typeof inv.customer === 'string' ? inv.customer : (cust.id || '');\n  const vip = String(inv.metadata?.ar_engine_exclude || cust.metadata?.ar_engine_exclude || '').toLowerCase() === 'true'\n    || CFG.excluded.includes(custId.toLowerCase()) || CFG.excluded.includes(email.toLowerCase());\n  if (killReason(inv) || !inv.due_date || !email || !inv.hosted_invoice_url || vip || inv.amount_remaining < CFG.minAmount) continue;\n\n  const dpd = today - dayNumber(new Date(inv.due_date * 1000));\n  const prev = ledger.sent[inv.id];\n  const daysSince = prev ? today - dayNumber(new Date(prev.at)) : null;\n  const stage = decide(dpd, prev ? prev.stage : 0, daysSince);\n  if (!stage) continue;\n\n  if (!CFG.dryRun) {                        // kill-switch: live re-check right before sending\n    inv = await stripeGet(`/v1/invoices/${inv.id}`);\n    if (killReason(inv)) continue;\n  }\n  const v = {\n    client_name: inv.customer_name || cust.name || 'there',\n    invoice_number: inv.number || inv.id,\n    amount: money(inv.amount_remaining, inv.currency),\n    original_amount: money(inv.amount_due, inv.currency),\n    amount_paid: money(inv.amount_paid, inv.currency),\n    due_date: fmtDate(inv.due_date),\n    payment_link: inv.hosted_invoice_url,\n    days_overdue: Math.max(dpd, 0),\n    agency_name: CFG.agencyName, signature: CFG.signature, billing_email: CFG.billingEmail,\n    interest_rate: CFG.interestRate, msa_clause: CFG.msaClause,\n  };\n  const body = render(TEMPLATES[stage].body, v);\n  out.push({ json: {\n    dry_run: CFG.dryRun, invoice_id: inv.id, invoice_number: v.invoice_number, stage,\n    days_past_due: dpd, to: email, subject: render(TEMPLATES[stage].subject, v),\n    text: toText(body), html: toHtml(body), idempotency_key: `ar-${inv.id}-stage-${stage}`,\n  }});\n}\nreturn out;\n"
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 5000
+      },
+      {
+        "id": "a3",
+        "name": "Dry Run?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          480,
+          300
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "loose"
+            },
+            "conditions": [
+              {
+                "id": "c1",
+                "leftValue": "={{ $json.dry_run }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true",
+                  "singleValue": true
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        }
+      },
+      {
+        "id": "a4",
+        "name": "Log Dry Run",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          720,
+          180
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// ===== Dry-run log: nothing is sent, ledger untouched =====\nreturn $input.all().map(i => ({ json: { would_send: true, invoice: i.json.invoice_number, stage: i.json.stage, to: i.json.to, subject: i.json.subject, days_past_due: i.json.days_past_due } }));\n"
+        }
+      },
+      {
+        "id": "a5",
+        "name": "Send via Resend",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          720,
+          420
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.resend.com/emails",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Idempotency-Key",
+                "value": "={{ $json.idempotency_key }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ from: $env.FROM_NAME + ' <' + $env.FROM_EMAIL + '>', to: [$json.to], reply_to: $env.REPLY_TO || $env.FROM_EMAIL, subject: $json.subject, text: $json.text, html: $json.html, tags: [{ name: 'source', value: 'ar_engine' }] }) }}",
+          "options": {
+            "batching": {
+              "batch": {
+                "batchSize": 1,
+                "batchInterval": 600
+              }
+            },
+            "timeout": 30000
+          }
+        },
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "",
+            "name": "Resend API (Authorization: Bearer re_...)"
+          }
+        },
+        "retryOnFail": true,
+        "maxTries": 4,
+        "waitBetweenTries": 3000,
+        "onError": "continueErrorOutput"
+      },
+      {
+        "id": "a6",
+        "name": "Record in Ledger",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          960,
+          360
+        ],
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "// ===== Record successful send in the dedup ledger (Run Once for Each Item) =====\nconst ledger = $getWorkflowStaticData('global');\nledger.sent = ledger.sent || {};\nconst src = $('Fetch & Decide').item.json;\nconst prev = ledger.sent[src.invoice_id];\nif (!prev || src.stage > prev.stage) {\n  ledger.sent[src.invoice_id] = { stage: src.stage, at: new Date().toISOString(), msg: $json.id || '' };\n}\nreturn { json: { ...src, html: undefined, text: undefined, provider_msg_id: $json.id || '', recorded: true } };\n"
+        }
+      },
+      {
+        "id": "a7",
+        "name": "Delivery Failed (retry next run)",
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          960,
+          520
+        ],
+        "parameters": {}
+      }
+    ],
+    "connections": {
+      "Daily 9am (Mon-Fri)": {
+        "main": [
+          [
+            {
+              "node": "Fetch & Decide",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch & Decide": {
+        "main": [
+          [
+            {
+              "node": "Dry Run?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Dry Run?": {
+        "main": [
+          [
+            {
+              "node": "Log Dry Run",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Send via Resend",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send via Resend": {
+        "main": [
+          [
+            {
+              "node": "Record in Ledger",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Delivery Failed (retry next run)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "timezone": "UTC",
+      "saveDataErrorExecution": "all",
+      "saveDataSuccessExecution": "all"
+    },
+    "pinData": {},
+    "active": false,
+    "id": "ar-recovery-engine-demo"
+  }
+]
